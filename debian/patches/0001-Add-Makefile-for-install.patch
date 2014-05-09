@@ -1,0 +1,31 @@
+From: Jack Christensen <jack@jackchristensen.com>
+Date: Thu, 8 May 2014 20:05:27 -0500
+Subject: Add Makefile for install
+
+---
+ Makefile | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+ create mode 100644 Makefile
+
+diff --git a/Makefile b/Makefile
+new file mode 100644
+index 0000000..47184d0
+--- /dev/null
++++ b/Makefile
+@@ -0,0 +1,16 @@
++BIN     = $(DESTDIR)/usr/bin
++
++tern: main.go
++	# Don't want to depend on godep for build so move nested package into correct place in godep
++	rm -rf $(CURDIR)/Godeps/_workspace/src/github.com/JackC/tern
++	mkdir -p $(CURDIR)/Godeps/_workspace/src/github.com/JackC/tern
++	cp -r $(CURDIR)/migrate $(CURDIR)/Godeps/_workspace/src/github.com/JackC/tern
++
++	GOPATH=$(CURDIR)/Godeps/_workspace go build -o tern
++
++install: tern
++	install -d $(BIN)
++	install ./tern $(BIN)
++
++clean:
++	rm -f tern
