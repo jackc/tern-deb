@@ -1,15 +1,15 @@
 Source: tern
-Section: unknown
+Section: devel
 Priority: optional
 Maintainer: Jack Christensen <jack@jackchristensen.com>
-Build-Depends: debhelper (>= 8.0.0)
+Build-Depends: debhelper (>= 8.0.0), golang (>= 1.2)
 Standards-Version: 3.9.4
-Homepage: <insert the upstream URL, if relevant>
-#Vcs-Git: git://git.debian.org/collab-maint/tern.git
-#Vcs-Browser: http://git.debian.org/?p=collab-maint/tern.git;a=summary
+Homepage: https://github.com/JackC/tern
+Vcs-Git: https://github.com/JackC/tern.git
+Vcs-Browser: https://github.com/JackC/tern
 
 Package: tern
 Architecture: any
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Description: <insert up to 60 chars description>
- <insert long description, indented with spaces>
+Description: PostgreSQL migration tool
+ Tern is a standalone migration tool for PostgreSQL.
