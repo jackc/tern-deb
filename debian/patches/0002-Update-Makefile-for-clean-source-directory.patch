@@ -1,0 +1,22 @@
+From: Jack Christensen <jack@jackchristensen.com>
+Date: Thu, 8 May 2014 20:23:40 -0500
+Subject: Update Makefile for clean source directory
+
+---
+ Makefile | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/Makefile b/Makefile
+index 47184d0..00bc30e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -8,6 +8,9 @@ tern: main.go
+ 
+ 	GOPATH=$(CURDIR)/Godeps/_workspace go build -o tern
+ 
++	# dpkg-source will complain about changes if we don't remove them
++	rm -rf $(CURDIR)/Godeps/_workspace/src/github.com/JackC/tern
++
+ install: tern
+ 	install -d $(BIN)
+ 	install ./tern $(BIN)
