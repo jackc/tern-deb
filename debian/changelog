@@ -1,0 +1,5 @@
+tern (1.2.0-1) unstable; urgency=low
+
+  * Initial release (Closes: #nnnn)  <nnnn is the bug number of your ITP>
+
+ -- Jack Christensen <jack@jackchristensen.com>  Thu, 08 May 2014 19:57:55 -0500
