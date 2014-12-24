@@ -1,0 +1,29 @@
+From: Jack Christensen <jack@jackchristensen.com>
+Date: Tue, 23 Dec 2014 23:31:53 -0600
+Subject: Update Makefile for godep
+
+---
+ Makefile | 10 +---------
+ 1 file changed, 1 insertion(+), 9 deletions(-)
+
+diff --git a/Makefile b/Makefile
+index 00bc30e..57fe74c 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,15 +1,7 @@
+ BIN     = $(DESTDIR)/usr/bin
+ 
+ tern: main.go
+-	# Don't want to depend on godep for build so move nested package into correct place in godep
+-	rm -rf $(CURDIR)/Godeps/_workspace/src/github.com/JackC/tern
+-	mkdir -p $(CURDIR)/Godeps/_workspace/src/github.com/JackC/tern
+-	cp -r $(CURDIR)/migrate $(CURDIR)/Godeps/_workspace/src/github.com/JackC/tern
+-
+-	GOPATH=$(CURDIR)/Godeps/_workspace go build -o tern
+-
+-	# dpkg-source will complain about changes if we don't remove them
+-	rm -rf $(CURDIR)/Godeps/_workspace/src/github.com/JackC/tern
++	godep go build -o tern
+ 
+ install: tern
+ 	install -d $(BIN)
