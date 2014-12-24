@@ -1,0 +1,29 @@
+From: Jack Christensen <jack@jackchristensen.com>
+Date: Tue, 23 Dec 2014 23:36:19 -0600
+Subject: Go back to manually tweaking build path
+
+---
+ Makefile | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/Makefile b/Makefile
+index 57fe74c..d363e7a 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,7 +1,15 @@
+ BIN     = $(DESTDIR)/usr/bin
+ 
+ tern: main.go
+-	godep go build -o tern
++	# Don't want to depend on godep for build so move nested package into correct place in godep
++	rm -rf $(CURDIR)/Godeps/_workspace/src/github.com/jackc/tern
++	mkdir -p $(CURDIR)/Godeps/_workspace/src/github.com/jackc/tern
++	cp -r $(CURDIR)/migrate $(CURDIR)/Godeps/_workspace/src/github.com/jackc/tern
++
++	GOPATH=$(CURDIR)/Godeps/_workspace go build -o tern
++
++	# dpkg-source will complain about changes if we don't remove them
++	rm -rf $(CURDIR)/Godeps/_workspace/src/github.com/jackc/tern
+ 
+ install: tern
+ 	install -d $(BIN)
