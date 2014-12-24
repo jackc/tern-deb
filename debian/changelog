@@ -1,3 +1,18 @@
+tern (1.3.0-1) trusty; urgency=medium
+
+  * Update README.markdown
+  * Update pgx
+  * Release 1.2.1
+  * More specific .gitignore for binary
+  * Fix new migration short name
+  * Release 1.2.2
+  * Update github.com/JackC to github.com/jackc
+  * Ignore tmp dir
+  * Upgrade to latest version of pgx
+  * Release 1.3.0
+
+ -- Jack Christensen <jack@jackchristensen.com>  Tue, 23 Dec 2014 23:26:11 -0600
+
 tern (1.2.0-1) trusty; urgency=low
 
   * Initial release
