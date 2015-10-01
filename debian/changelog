@@ -1,3 +1,12 @@
+tern (1.5.0-1) trusty; urgency=medium
+
+  * Use new pgx fallback TLS functionality
+  * Replace fork of codegangsta/cli with spf13/cobra
+  * Add status subcommand
+  * Add relative and redo migration destinations
+
+ -- Jack Christensen <jack@jackchristensen.com>  Thu, 01 Oct 2015 12:25:52 -0500
+
 tern (1.4.0-1) trusty; urgency=medium
 
   * Replace gocheck with stdlib testing
