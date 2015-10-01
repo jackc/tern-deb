@@ -4,18 +4,19 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"github.com/jackc/cli"
-	"github.com/jackc/pgx"
-	"github.com/jackc/tern/migrate"
-	"github.com/vaughan0/go-ini"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/jackc/pgx"
+	"github.com/jackc/tern/migrate"
+	"github.com/spf13/cobra"
+	"github.com/vaughan0/go-ini"
 )
 
-const VERSION = "1.4.0"
+const VERSION = "1.5.0"
 
 var defaultConf = `[database]
 # host is required (network host or path to Unix domain socket)
@@ -68,6 +69,12 @@ type Config struct {
 	Data         map[string]interface{}
 }
 
+var cliOptions struct {
+	destinationVersion string
+	migrationsPath     string
+	configPath         string
+}
+
 func (c *Config) Validate() error {
 	if c.ConnConfig.Host == "" {
 		return errors.New("Config must contain host but it does not")
@@ -89,84 +96,113 @@ func (c *Config) Validate() error {
 
 func (c *Config) Connect() (*pgx.Conn, error) {
 	switch c.SslMode {
-	case "prefer", "require":
+	case "disable":
+	case "allow":
+		c.ConnConfig.UseFallbackTLS = true
+		c.ConnConfig.FallbackTLSConfig = &tls.Config{InsecureSkipVerify: true}
+	case "prefer":
 		c.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true}
-	case "verify-ca", "verify-full":
-		c.ConnConfig.TLSConfig = &tls.Config{ServerName: c.ConnConfig.Host}
+		c.ConnConfig.UseFallbackTLS = true
+		c.ConnConfig.FallbackTLSConfig = nil
+	case "require", "verify-ca", "verify-full":
+		c.ConnConfig.TLSConfig = &tls.Config{
+			ServerName: c.ConnConfig.Host,
+		}
 	}
 
-	conn, err := pgx.Connect(c.ConnConfig)
-	if err == pgx.ErrTLSRefused && c.SslMode == "prefer" {
-		c.ConnConfig.TLSConfig = nil
-		conn, err = pgx.Connect(c.ConnConfig)
-	} else if pgErr, ok := err.(pgx.PgError); ok && pgErr.Code == "28000" && c.SslMode == "allow" {
-		c.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true}
-		conn, err = pgx.Connect(c.ConnConfig)
-	}
-
-	return conn, err
+	return pgx.Connect(c.ConnConfig)
 }
 
 func main() {
-	app := cli.NewApp()
-	app.Name = "tern"
-	app.Usage = "PostgreSQL database migrator"
-	app.Version = VERSION
-	app.Author = "Jack Christensen"
-	app.Email = "jack@jackchristensen.com"
+	cmdInit := &cobra.Command{
+		Use:   "init DIRECTORY",
+		Short: "Initialize a new tern project",
+		Long:  "Initialize a new tern project in DIRECTORY",
+		Run:   Init,
+	}
 
-	app.Commands = []cli.Command{
-		{
-			Name:        "init",
-			ShortName:   "i",
-			Usage:       "init a new tern project",
-			Synopsis:    "[directory]",
-			Description: "Initialize a new tern project in directory",
-			Action:      Init,
-		},
-		{
-			Name:        "migrate",
-			ShortName:   "m",
-			Usage:       "migrate the database",
-			Synopsis:    "[command options]",
-			Description: "migrate the database to destination version",
-			Flags: []cli.Flag{
-				cli.StringFlag{"destination, d", "last", "Destination migration version"},
-				cli.StringFlag{"migrations, m", ".", "Migrations path"},
-				cli.StringFlag{"config, c", "tern.conf", "Config path"},
-			},
-			Action: Migrate,
-		},
-		{
-			Name:        "new",
-			ShortName:   "n",
-			Usage:       "generate a new migration",
-			Synopsis:    "[command options] name",
-			Description: "generate a new migration with the next sequence number and provided name",
-			Flags: []cli.Flag{
-				cli.StringFlag{"migrations, m", ".", "Migrations path"},
-			},
-			Action: NewMigration,
+	cmdMigrate := &cobra.Command{
+		Use:   "migrate",
+		Short: "Migrate the database",
+		Long: `Migrate the database to destination migration version.
+
+Destination migration version can be one of the following value types:
+
+An integer:
+  Migrate to a specific migration.
+  e.g. tern -d 42
+
+"+" and an integer:
+  Migrate forward N steps.
+  e.g. tern -d +3
+
+"-" and an integer:
+  Migrate backward N steps.
+  e.g. tern -d -2
+
+"-+" and an integer:
+  Redo previous N steps (migrate backward N steps then forward N steps).
+  e.g. tern -d -+1
+
+The word "last":
+  Migrate to the most recent migration. This is the default value, so it is
+  never needed to specify directly.
+  e.g. tern
+  e.g. tern -d last
+		`,
+		Run: Migrate,
+	}
+	cmdMigrate.Flags().StringVarP(&cliOptions.destinationVersion, "destination", "d", "last", "destination migration version")
+	cmdMigrate.Flags().StringVarP(&cliOptions.migrationsPath, "migrations", "m", ".", "migrations path")
+	cmdMigrate.Flags().StringVarP(&cliOptions.configPath, "config", "c", "tern.conf", "config path")
+
+	cmdStatus := &cobra.Command{
+		Use:   "status",
+		Short: "Print current migration status",
+		Run:   Status,
+	}
+	cmdStatus.Flags().StringVarP(&cliOptions.migrationsPath, "migrations", "m", ".", "migrations path")
+	cmdStatus.Flags().StringVarP(&cliOptions.configPath, "config", "c", "tern.conf", "config path")
+
+	cmdNew := &cobra.Command{
+		Use:   "new NAME",
+		Short: "Generate a new migration",
+		Long:  "Generate a new migration with the next sequence number and provided name",
+		Run:   NewMigration,
+	}
+	cmdNew.Flags().StringVarP(&cliOptions.migrationsPath, "migrations", "m", ".", "migrations path")
+
+	cmdVersion := &cobra.Command{
+		Use:   "version",
+		Short: "Print version",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("tern v%s\n", VERSION)
 		},
 	}
 
-	app.Run(os.Args)
+	rootCmd := &cobra.Command{Use: "tern", Short: "tern - PostgreSQL database migrator"}
+	rootCmd.AddCommand(cmdInit)
+	rootCmd.AddCommand(cmdMigrate)
+	rootCmd.AddCommand(cmdStatus)
+	rootCmd.AddCommand(cmdNew)
+	rootCmd.AddCommand(cmdVersion)
+	rootCmd.Execute()
 }
 
-func Init(c *cli.Context) {
+func Init(cmd *cobra.Command, args []string) {
 	var directory string
-	switch len(c.Args()) {
+	switch len(args) {
 	case 0:
 		directory = "."
 	case 1:
-		directory = c.Args()[0]
+		directory = args[0]
 		err := os.Mkdir(directory, os.ModePerm)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 	default:
-		cli.ShowCommandHelp(c, c.Command.Name)
+		cmd.Help()
 		os.Exit(1)
 	}
 
@@ -201,15 +237,15 @@ func Init(c *cli.Context) {
 	}
 }
 
-func NewMigration(c *cli.Context) {
-	if len(c.Args()) != 1 {
-		cli.ShowCommandHelp(c, c.Command.Name)
+func NewMigration(cmd *cobra.Command, args []string) {
+	if len(args) != 1 {
+		cmd.Help()
 		os.Exit(1)
 	}
 
-	name := c.Args()[0]
+	name := args[0]
 
-	migrationsPath := c.String("migrations")
+	migrationsPath := cliOptions.migrationsPath
 	migrations, err := migrate.FindMigrations(migrationsPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading migrations:\n  %v\n", err)
@@ -235,8 +271,8 @@ func NewMigration(c *cli.Context) {
 
 }
 
-func Migrate(c *cli.Context) {
-	config, err := ReadConfig(c.String("config"))
+func Migrate(cmd *cobra.Command, args []string) {
+	config, err := ReadConfig(cliOptions.configPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error reading config:\n  %v\n", err)
 		os.Exit(1)
@@ -262,7 +298,7 @@ func Migrate(c *cli.Context) {
 	}
 	migrator.Data = config.Data
 
-	migrationsPath := c.String("migrations")
+	migrationsPath := cliOptions.migrationsPath
 	err = migrator.LoadMigrations(migrationsPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error loading migrations:\n  %v\n", err)
@@ -277,18 +313,36 @@ func Migrate(c *cli.Context) {
 		fmt.Printf("%s executing %s %s\n%s\n\n", time.Now().Format("2006-01-02 15:04:05"), name, direction, sql)
 	}
 
-	destination := c.String("destination")
-	if destination == "last" {
-		err = migrator.Migrate()
-	} else {
+	var currentVersion int32
+	currentVersion, err = migrator.GetCurrentVersion()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to get current version:\n  %v\n", err)
+		os.Exit(1)
+	}
+
+	destination := cliOptions.destinationVersion
+	mustParseDestination := func(d string) int32 {
 		var n int64
-		n, err = strconv.ParseInt(destination, 10, 32)
+		n, err = strconv.ParseInt(d, 10, 32)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Bad destination:\n  %v\n", err)
 			os.Exit(1)
 		}
-
-		err = migrator.MigrateTo(int32(n))
+		return int32(n)
+	}
+	if destination == "last" {
+		err = migrator.Migrate()
+	} else if len(destination) >= 3 && destination[0:2] == "-+" {
+		err = migrator.MigrateTo(currentVersion - mustParseDestination(destination[2:]))
+		if err == nil {
+			err = migrator.MigrateTo(currentVersion)
+		}
+	} else if len(destination) >= 2 && destination[0] == '-' {
+		err = migrator.MigrateTo(currentVersion - mustParseDestination(destination[1:]))
+	} else if len(destination) >= 2 && destination[0] == '+' {
+		err = migrator.MigrateTo(currentVersion + mustParseDestination(destination[1:]))
+	} else {
+		err = migrator.MigrateTo(mustParseDestination(destination))
 	}
 
 	if err != nil {
@@ -309,6 +363,64 @@ func Migrate(c *cli.Context) {
 		}
 		os.Exit(1)
 	}
+}
+
+func Status(cmd *cobra.Command, args []string) {
+	config, err := ReadConfig(cliOptions.configPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error reading config:\n  %v\n", err)
+		os.Exit(1)
+	}
+
+	err = config.Validate()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Invalid config:\n  %v\n", err)
+		os.Exit(1)
+	}
+
+	conn, err := config.Connect()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Unable to connect to PostgreSQL:\n  %v\n", err)
+		os.Exit(1)
+	}
+	defer conn.Close()
+
+	migrator, err := migrate.NewMigrator(conn, config.VersionTable)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error initializing migrator:\n  %v\n", err)
+		os.Exit(1)
+	}
+	migrator.Data = config.Data
+
+	migrationsPath := cliOptions.migrationsPath
+	err = migrator.LoadMigrations(migrationsPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error loading migrations:\n  %v\n", err)
+		os.Exit(1)
+	}
+	if len(migrator.Migrations) == 0 {
+		fmt.Fprintln(os.Stderr, "No migrations found")
+		os.Exit(1)
+	}
+
+	migrationVersion, err := migrator.GetCurrentVersion()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error retrieving migration version:\n  %v\n", err)
+		os.Exit(1)
+	}
+
+	var status string
+	behindCount := len(migrator.Migrations) - int(migrationVersion)
+	if behindCount == 0 {
+		status = "up to date"
+	} else {
+		status = "migration(s) pending"
+	}
+
+	fmt.Println("status:  ", status)
+	fmt.Printf("version:  %d of %d\n", migrationVersion, len(migrator.Migrations))
+	fmt.Println("host:    ", config.ConnConfig.Host)
+	fmt.Println("database:", config.ConnConfig.Database)
 }
 
 func ReadConfig(path string) (*Config, error) {
