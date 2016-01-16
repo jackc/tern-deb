@@ -2,9 +2,16 @@
 
 Tern is a standalone migration tool for PostgreSQL.
 
+## Features
+
+* Multi-platform
+* Stand-alone binary
+* SSH tunnel support built-in
+* Data variable interpolation into migrations
+
 ## Installation
 
-    go get github.com/jackc/tern
+    go get -u github.com/jackc/tern
 
 ## Creating a Tern Project
 
@@ -16,12 +23,33 @@ Or to create the project somewhere else:
 
     tern init path/to/project
 
-Tern projects are composed of a config file and a directory of migrations. See
-the sample directory for an example. By default tern will look in the current
-directory for the config file tern.conf and the migrations.
+Tern projects are composed of a directory of migrations and optionally a
+config file. See the sample directory for an example.
 
-The config file requires socket or host and database. User defaults to the
-current OS user.
+# Configuration
+
+Database connection settings can be specified via the standard PostgreSQL
+environment variables (PGHOST, PGPORT, PGDATABASE, PGUSER, PGPASSWORD, and
+PGSSLMODE), via program arguments, or in a config file. By default tern will
+look in the current directory for the config file tern.conf and the
+migrations.
+
+The `tern.conf` file is stored in the `ini` format with two sections,
+`database` and `data`. The `database` section contains settings for connection
+to the database server.
+
+Values in the `data` section will be available for interpolation into
+migrations. This can help in scenarios where migrations are managing
+permissions and the user to which permissions are granted should be
+configurable.
+
+If all database settings are supplied by PG* environment variables or program
+arguments the config file is not required.
+
+The entire `tern.conf` file is processed through the Go standard
+`text/template` package. The program environment is available at `.env`.
+
+Example `tern.conf`:
 
 ```ini
 [database]
@@ -31,7 +59,7 @@ host = 127.0.0.1
 # port = 5432
 database = tern_test
 user = jack
-# password = secret
+password = {{.env.MIGRATOR_PASSWORD}}
 # version_table = schema_version
 #
 # sslmode generally matches the behavior described in:
@@ -42,13 +70,29 @@ user = jack
 # verify-full - require SSL connection
 # sslmode = prefer
 
+# Proxy the above database connection via SSH
+# [ssh-tunnel]
+# host =
+# port = 22
+# user defaults to OS user
+# user =
+# password is not required if using SSH agent authentication
+# password =
 
 [data]
 prefix = foo
+app_user = joe
 
 ```
 
-Values in the data section will be available for interpolation into migrations.
+This flexibility configuration style allows handling multiple environments such
+as test, development, and production in several ways.
+
+* Separate config file for each environment
+* Environment variables for database settings and optionally one config file
+  for shared settings
+* Program arguments for database settings and optionally one config file for
+  shared settings
 
 ## Migrations
 
@@ -142,6 +186,18 @@ To use a different migrations directory:
 
     tern migrate --migrations path/to/migrations
 
+## SSH Tunnel
+
+Tern includes SSH tunnel support. Simply supply the SSH host, and optionally
+port, user, and password in the config file or as program arguments and Tern
+will tunnel the database connection through that server. When using a SSH tunnel
+the database host should be from the context of the SSH server. For example, if
+your PostgreSQL server is `pg.example.com`, but you only have SSH access, then
+your SSH host would be pg.example.com and your database host would be
+`localhost`.
+
+Tern will automatically use an SSH agent if available.
+
 ## Embedding Tern
 
 All the actual functionality of tern is in the github.com/jackc/tern/migrate
@@ -170,6 +226,21 @@ Gem are incompatible with the version 1 release. However, that version of tern
 is still available through RubyGems and the source code is on the ruby branch.
 
 ## Version History
+
+## 1.7.0 (January 17, 2016)
+
+* Add SSH tunnel support
+
+## 1.6.1 (January 16, 2016)
+
+* Fix version output
+* Evaluate config files through text/template with ENV
+
+## 1.6.0 (January 15, 2016)
+
+* Optionally read database connection settings from environment
+* Accept database connection settings via program arguments
+* Make config file optional
 
 ## 1.5.0 (October 1, 2015)
 

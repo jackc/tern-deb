@@ -226,3 +226,101 @@ version:  1 of 2`
 		t.Errorf("Expected status output to contain `%s`, but it didn't. Output:\n%s", expected, output)
 	}
 }
+
+func TestCLIArgsWithoutConfigFile(t *testing.T) {
+	// Ensure database is in clean state
+	tern(t, "migrate", "-m", "testdata", "-c", "testdata/tern.conf", "-d", "0")
+
+	connConfig, err := readConfig("testdata/tern.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	output := tern(t, "status",
+		"-m", "testdata",
+		"--host", connConfig.Host,
+		"--port", strconv.FormatInt(int64(connConfig.Port), 10),
+		"--user", connConfig.User,
+		"--password", connConfig.Password,
+		"--database", connConfig.Database,
+	)
+	expected := `status:   migration(s) pending
+version:  0 of 2`
+	if !strings.Contains(output, expected) {
+		t.Errorf("Expected status output to contain `%s`, but it didn't. Output:\n%s", expected, output)
+	}
+}
+
+func TestConfigFileTemplateEvalWithEnvVar(t *testing.T) {
+	// Ensure database is in clean state
+	tern(t, "migrate", "-m", "testdata", "-c", "testdata/tern.conf", "-d", "0")
+
+	connConfig, err := readConfig("testdata/tern.conf")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = os.Setenv("TERNHOST", connConfig.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		err := os.Unsetenv("TERNHOST")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}()
+
+	output := tern(t, "status",
+		"-c", "testdata/tern-envvar.conf",
+		"-m", "testdata",
+		"--port", strconv.FormatInt(int64(connConfig.Port), 10),
+		"--user", connConfig.User,
+		"--password", connConfig.Password,
+		"--database", connConfig.Database,
+	)
+	expected := `status:   migration(s) pending
+version:  0 of 2`
+	if !strings.Contains(output, expected) {
+		t.Errorf("Expected status output to contain `%s`, but it didn't. Output:\n%s", expected, output)
+	}
+}
+
+func TestSSHTunnel(t *testing.T) {
+	host := os.Getenv("TERN_HOST")
+	if host == "" {
+		t.Skip("Skipping SSH Tunnel test due to missing TERN_HOST environment variable")
+	}
+
+	user := os.Getenv("TERN_USER")
+	if user == "" {
+		t.Skip("Skipping SSH Tunnel test due to missing TERN_USER environment variable")
+	}
+
+	password := os.Getenv("TERN_PASSWORD")
+	if password == "" {
+		t.Skip("Skipping SSH Tunnel test due to missing TERN_PASSWORD environment variable")
+	}
+
+	database := os.Getenv("TERN_DATABASE")
+	if database == "" {
+		t.Skip("Skipping SSH Tunnel test due to missing TERN_DATABASE environment variable")
+	}
+
+	// Ensure database is in clean state
+	tern(t, "migrate", "-m", "testdata", "-c", "testdata/tern.conf", "-d", "0")
+
+	output := tern(t, "status",
+		"-m", "testdata",
+		"--ssh-host", "localhost",
+		"--host", host,
+		"--user", user,
+		"--password", password,
+		"--database", database,
+	)
+	expected := `status:   migration(s) pending
+version:  0 of 2`
+	if !strings.Contains(output, expected) {
+		t.Errorf("Expected status output to contain `%s`, but it didn't. Output:\n%s", expected, output)
+	}
+}

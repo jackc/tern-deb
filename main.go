@@ -1,13 +1,16 @@
 package main
 
 import (
-	"crypto/tls"
+	"bytes"
 	"errors"
 	"fmt"
+	"io/ioutil"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/jackc/pgx"
@@ -16,7 +19,7 @@ import (
 	"github.com/vaughan0/go-ini"
 )
 
-const VERSION = "1.5.0"
+const VERSION = "1.7.0"
 
 var defaultConf = `[database]
 # host is required (network host or path to Unix domain socket)
@@ -35,6 +38,15 @@ var defaultConf = `[database]
 # prefer - on trusted networks where security is not required
 # verify-full - require SSL connection
 # sslmode = prefer
+
+# Proxy the above database connection via SSH
+# [ssh-tunnel]
+# host =
+# port = 22
+# user defaults to OS user
+# user =
+# password is not required if using SSH agent authentication
+# password =
 
 [data]
 # Any fields in the data section are available in migration templates
@@ -63,16 +75,30 @@ var newMigrationText = `-- Write your migrate up statements here
 `
 
 type Config struct {
-	ConnConfig   pgx.ConnConfig
-	SslMode      string
-	VersionTable string
-	Data         map[string]interface{}
+	ConnConfig    pgx.ConnConfig
+	SslMode       string
+	VersionTable  string
+	Data          map[string]interface{}
+	SSHConnConfig SSHConnConfig
 }
 
 var cliOptions struct {
 	destinationVersion string
 	migrationsPath     string
 	configPath         string
+
+	host         string
+	port         uint16
+	user         string
+	password     string
+	database     string
+	sslmode      string
+	versionTable string
+
+	sshHost     string
+	sshPort     string
+	sshUser     string
+	sshPassword string
 }
 
 func (c *Config) Validate() error {
@@ -85,7 +111,7 @@ func (c *Config) Validate() error {
 	}
 
 	switch c.SslMode {
-	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+	case "", "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
 		// okay
 	default:
 		return errors.New("sslmode is invalid")
@@ -95,18 +121,49 @@ func (c *Config) Validate() error {
 }
 
 func (c *Config) Connect() (*pgx.Conn, error) {
+	if c.SSHConnConfig.Host != "" {
+		client, err := NewSSHClient(&c.SSHConnConfig)
+		if err != nil {
+			return nil, err
+		}
+
+		// Normally pgx handles setting default port to 5432, but since the SSH
+		// tunnel is making the connection handle that here.
+		if c.ConnConfig.Port == 0 {
+			c.ConnConfig.Port = 5432
+		}
+
+		tunnelServer, err := NewSSHTunnelServer(client, c.ConnConfig.Host, strconv.Itoa(int(c.ConnConfig.Port)))
+		if err != nil {
+			return nil, err
+		}
+
+		c.ConnConfig.Host = tunnelServer.Host()
+		if port, err := strconv.ParseUint(tunnelServer.Port(), 10, 16); err == nil {
+			c.ConnConfig.Port = uint16(port)
+		} else {
+			return nil, err
+		}
+	}
+
+	// If sslmode was set in config file or cli argument, set it in the
+	// environment so we can use pgx.ParseEnvLibpq to use pgx's built-in
+	// functionality.
 	switch c.SslMode {
-	case "disable":
-	case "allow":
-		c.ConnConfig.UseFallbackTLS = true
-		c.ConnConfig.FallbackTLSConfig = &tls.Config{InsecureSkipVerify: true}
-	case "prefer":
-		c.ConnConfig.TLSConfig = &tls.Config{InsecureSkipVerify: true}
-		c.ConnConfig.UseFallbackTLS = true
-		c.ConnConfig.FallbackTLSConfig = nil
-	case "require", "verify-ca", "verify-full":
-		c.ConnConfig.TLSConfig = &tls.Config{
-			ServerName: c.ConnConfig.Host,
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
+		if err := os.Setenv("PGHOST", c.ConnConfig.Host); err != nil {
+			return nil, err
+		}
+		if err := os.Setenv("PGSSLMODE", c.SslMode); err != nil {
+			return nil, err
+		}
+
+		if cc, err := pgx.ParseEnvLibpq(); err == nil {
+			c.ConnConfig.TLSConfig = cc.TLSConfig
+			c.ConnConfig.UseFallbackTLS = cc.UseFallbackTLS
+			c.ConnConfig.FallbackTLSConfig = cc.FallbackTLSConfig
+		} else {
+			return nil, err
 		}
 	}
 
@@ -153,16 +210,14 @@ The word "last":
 		Run: Migrate,
 	}
 	cmdMigrate.Flags().StringVarP(&cliOptions.destinationVersion, "destination", "d", "last", "destination migration version")
-	cmdMigrate.Flags().StringVarP(&cliOptions.migrationsPath, "migrations", "m", ".", "migrations path")
-	cmdMigrate.Flags().StringVarP(&cliOptions.configPath, "config", "c", "tern.conf", "config path")
+	addConfigFlagsToCommand(cmdMigrate)
 
 	cmdStatus := &cobra.Command{
 		Use:   "status",
 		Short: "Print current migration status",
 		Run:   Status,
 	}
-	cmdStatus.Flags().StringVarP(&cliOptions.migrationsPath, "migrations", "m", ".", "migrations path")
-	cmdStatus.Flags().StringVarP(&cliOptions.configPath, "config", "c", "tern.conf", "config path")
+	addConfigFlagsToCommand(cmdStatus)
 
 	cmdNew := &cobra.Command{
 		Use:   "new NAME",
@@ -187,6 +242,24 @@ The word "last":
 	rootCmd.AddCommand(cmdNew)
 	rootCmd.AddCommand(cmdVersion)
 	rootCmd.Execute()
+}
+
+func addConfigFlagsToCommand(cmd *cobra.Command) {
+	cmd.Flags().StringVarP(&cliOptions.migrationsPath, "migrations", "m", ".", "migrations path")
+	cmd.Flags().StringVarP(&cliOptions.configPath, "config", "c", "", "config path (default is ./tern.conf)")
+
+	cmd.Flags().StringVarP(&cliOptions.host, "host", "", "", "database host")
+	cmd.Flags().Uint16VarP(&cliOptions.port, "port", "", 0, "database port")
+	cmd.Flags().StringVarP(&cliOptions.user, "user", "", "", "database user")
+	cmd.Flags().StringVarP(&cliOptions.password, "password", "", "", "database password")
+	cmd.Flags().StringVarP(&cliOptions.database, "database", "", "", "database name")
+	cmd.Flags().StringVarP(&cliOptions.sslmode, "sslmode", "", "", "SSL mode")
+	cmd.Flags().StringVarP(&cliOptions.versionTable, "version-table", "", "schema_version", "version table name")
+
+	cmd.Flags().StringVarP(&cliOptions.sshHost, "ssh-host", "", "", "SSH tunnel host")
+	cmd.Flags().StringVarP(&cliOptions.sshPort, "ssh-port", "", "ssh", "SSH tunnel port")
+	cmd.Flags().StringVarP(&cliOptions.sshUser, "ssh-user", "", "", "SSH tunnel user (default is OS user")
+	cmd.Flags().StringVarP(&cliOptions.sshPassword, "ssh-password", "", "", "SSH tunnel password (unneeded if using SSH agent authentication)")
 }
 
 func Init(cmd *cobra.Command, args []string) {
@@ -272,9 +345,9 @@ func NewMigration(cmd *cobra.Command, args []string) {
 }
 
 func Migrate(cmd *cobra.Command, args []string) {
-	config, err := ReadConfig(cliOptions.configPath)
+	config, err := LoadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading config:\n  %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error loading config:\n  %v\n", err)
 		os.Exit(1)
 	}
 
@@ -366,9 +439,9 @@ func Migrate(cmd *cobra.Command, args []string) {
 }
 
 func Status(cmd *cobra.Command, args []string) {
-	config, err := ReadConfig(cliOptions.configPath)
+	config, err := LoadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error reading config:\n  %v\n", err)
+		fmt.Fprintf(os.Stderr, "Error loading config:\n  %v\n", err)
 		os.Exit(1)
 	}
 
@@ -423,32 +496,106 @@ func Status(cmd *cobra.Command, args []string) {
 	fmt.Println("database:", config.ConnConfig.Database)
 }
 
-func ReadConfig(path string) (*Config, error) {
-	file, err := ini.LoadFile(path)
-	if err != nil {
+func LoadConfig() (*Config, error) {
+	config := &Config{VersionTable: "schema_version"}
+	if connConfig, err := pgx.ParseEnvLibpq(); err == nil {
+		config.ConnConfig = connConfig
+	} else {
 		return nil, err
 	}
 
-	config := &Config{VersionTable: "schema_version"}
-
-	config.ConnConfig.Host, _ = file.Get("database", "host")
-
-	// For backwards compatibility if host isn't set look for socket.
-	if config.ConnConfig.Host == "" {
-		config.ConnConfig.Host, _ = file.Get("database", "socket")
+	// Set default config path only if it exists
+	if cliOptions.configPath == "" {
+		if _, err := os.Stat("./tern.conf"); err == nil {
+			cliOptions.configPath = "./tern.conf"
+		}
 	}
 
-	if p, ok := file.Get("database", "port"); ok {
-		n, err := strconv.ParseUint(p, 10, 16)
-		config.ConnConfig.Port = uint16(n)
+	if cliOptions.configPath != "" {
+		err := appendConfigFromFile(config, cliOptions.configPath)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	config.ConnConfig.Database, _ = file.Get("database", "database")
-	config.ConnConfig.User, _ = file.Get("database", "user")
-	config.ConnConfig.Password, _ = file.Get("database", "password")
+	appendConfigFromCLIArgs(config)
+
+	if config.SSHConnConfig.User == "" {
+		user, err := user.Current()
+		if err != nil {
+			return nil, err
+		}
+		config.SSHConnConfig.User = user.Username
+	}
+
+	if config.SSHConnConfig.Port == "" {
+		config.SSHConnConfig.Port = "ssh"
+	}
+
+	return config, nil
+}
+
+func appendConfigFromFile(config *Config, path string) error {
+	env := make(map[string]string)
+	for _, s := range os.Environ() {
+		parts := strings.SplitN(s, "=", 2)
+		env[parts[0]] = parts[1]
+	}
+
+	fileBytes, err := ioutil.ReadFile(path)
+	if err != nil {
+		return err
+	}
+
+	confTemplate, err := template.New("conf").Parse(string(fileBytes))
+	if err != nil {
+		return err
+	}
+
+	var buf bytes.Buffer
+	err = confTemplate.Execute(&buf, map[string]interface{}{
+		"env": env,
+	})
+	if err != nil {
+		return err
+	}
+
+	file, err := ini.Load(&buf)
+	if err != nil {
+		return err
+	}
+
+	if host, ok := file.Get("database", "host"); ok {
+		config.ConnConfig.Host = host
+	}
+
+	// For backwards compatibility if host isn't set look for socket.
+	if config.ConnConfig.Host == "" {
+		if socket, ok := file.Get("database", "socket"); ok {
+			config.ConnConfig.Host = socket
+		}
+	}
+
+	if config.ConnConfig.Port == 0 {
+		if p, ok := file.Get("database", "port"); ok {
+			n, err := strconv.ParseUint(p, 10, 16)
+			if err != nil {
+				return err
+			}
+			config.ConnConfig.Port = uint16(n)
+		}
+	}
+
+	if database, ok := file.Get("database", "database"); ok {
+		config.ConnConfig.Database = database
+	}
+
+	if user, ok := file.Get("database", "user"); ok {
+		config.ConnConfig.User = user
+	}
+	if password, ok := file.Get("database", "password"); ok {
+		config.ConnConfig.Password = password
+	}
 
 	if vt, ok := file.Get("database", "version_table"); ok {
 		config.VersionTable = vt
@@ -456,8 +603,6 @@ func ReadConfig(path string) (*Config, error) {
 
 	if sslmode, ok := file.Get("database", "sslmode"); ok {
 		config.SslMode = sslmode
-	} else {
-		config.SslMode = "prefer"
 	}
 
 	config.Data = make(map[string]interface{})
@@ -465,5 +610,58 @@ func ReadConfig(path string) (*Config, error) {
 		config.Data[key] = value
 	}
 
-	return config, nil
+	if host, ok := file.Get("ssh-tunnel", "host"); ok {
+		config.SSHConnConfig.Host = host
+	}
+
+	if port, ok := file.Get("ssh-tunnel", "port"); ok {
+		config.SSHConnConfig.Port = port
+	}
+
+	if user, ok := file.Get("ssh-tunnel", "user"); ok {
+		config.SSHConnConfig.User = user
+	}
+
+	if password, ok := file.Get("ssh-tunnel", "password"); ok {
+		config.SSHConnConfig.Password = password
+	}
+
+	return nil
+}
+
+func appendConfigFromCLIArgs(config *Config) {
+	if cliOptions.host != "" {
+		config.ConnConfig.Host = cliOptions.host
+	}
+	if cliOptions.port != 0 {
+		config.ConnConfig.Port = cliOptions.port
+	}
+	if cliOptions.database != "" {
+		config.ConnConfig.Database = cliOptions.database
+	}
+	if cliOptions.user != "" {
+		config.ConnConfig.User = cliOptions.user
+	}
+	if cliOptions.password != "" {
+		config.ConnConfig.Password = cliOptions.password
+	}
+	if cliOptions.sslmode != "" {
+		config.SslMode = cliOptions.sslmode
+	}
+	if cliOptions.versionTable != "" {
+		config.VersionTable = cliOptions.versionTable
+	}
+
+	if cliOptions.sshHost != "" {
+		config.SSHConnConfig.Host = cliOptions.sshHost
+	}
+	if cliOptions.sshPort != "" {
+		config.SSHConnConfig.Port = cliOptions.sshPort
+	}
+	if cliOptions.sshUser != "" {
+		config.SSHConnConfig.User = cliOptions.sshUser
+	}
+	if cliOptions.sshPassword != "" {
+		config.SSHConnConfig.Password = cliOptions.sshPassword
+	}
 }
