@@ -1,3 +1,12 @@
+tern (1.7.0-1) trusty; urgency=medium
+
+  * Add CLI args for DB connection settings
+  * Accept database connection settings from environment
+  * Add text/template with env processing of config file
+  * Add SSH tunnel support
+
+ -- Jack Christensen <jack@jackchristensen.com>  Sat, 16 Jan 2016 11:00:56 -0600
+
 tern (1.5.0-1) trusty; urgency=medium
 
   * Use new pgx fallback TLS functionality
